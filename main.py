@@ -260,7 +260,7 @@ class Live2DApp:
     def setup_model_area(self, parent):
         model_frame = tk.LabelFrame(
             parent, 
-            text="Live2D Model (OpenGL)" if OPENGL_AVAILABLE else "Live2D Model (Dependencies Missing)", 
+            text="Live2D Model" if OPENGL_AVAILABLE else "Live2D Model (Dependencies Missing)", 
             bg='#3b3b3b', 
             fg='white', 
             font=('Arial', 12, 'bold')
@@ -362,7 +362,7 @@ class Live2DApp:
     def setup_text_input(self, parent):
         text_frame = tk.LabelFrame(
             parent, 
-            text="Interactive Text Input (Always Available)", 
+            text="Send Lei a message!", 
             bg='#3b3b3b', 
             fg='white', 
             font=('Arial', 12, 'bold')
