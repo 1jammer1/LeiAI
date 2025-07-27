@@ -5,12 +5,10 @@ import sys
 from time import sleep
 import threading
 
-# Conditional imports with fallback handling
 try:
     import pyautogui
-    from pyopengltk import OpenGLFrame as RealOpenGLFrame
+    from pyopengltk import OpenGLFrame as BaseOpenGLFrame
     import live2d.v2 as live2d
-    # import live2d.v3 as live2d  # Uncomment for v3 models
     LIVE2D_AVAILABLE = True
     OPENGL_AVAILABLE = True
 except ImportError as e:
@@ -19,8 +17,7 @@ except ImportError as e:
     print(f"Warning: Live2D dependencies not found: {e}")
     print("Please install with: pip install pyopengltk pyautogui live2d")
     
-    # Create fallback base class when OpenGLFrame is not available
-    class RealOpenGLFrame:
+    class BaseOpenGLFrame:
         def __init__(self, master, **kw):
             self.master = master
             self.width = kw.get('width', 400)
@@ -38,21 +35,19 @@ except ImportError as e:
         def winfo_rooty(self):
             return 0
 
-class Live2DOpenGLFrame:
-    """OpenGL Frame for Live2D model rendering with fallback support"""
-    
+class Live2DOpenGLFrame(BaseOpenGLFrame):
     def __init__(self, master, **kw):
-        # Set fallback status first, before calling parent __init__
-        self.is_fallback = not OPENGL_AVAILABLE
         self.model = None
         self.model_path = None
         self.is_initialized = False
         self.width = kw.get('width', 400)
         self.height = kw.get('height', 300)
         self.master = master
+        self.animate_flag = False
+        self.animation_thread = None
+        self.is_fallback = not OPENGL_AVAILABLE
         
         if self.is_fallback:
-            # Create fallback canvas when OpenGL is not available
             self.fallback_canvas = tk.Canvas(
                 master,
                 bg='#1e1e1e',
@@ -62,35 +57,33 @@ class Live2DOpenGLFrame:
             )
             self.show_fallback_message()
         else:
-            # Initialize the real OpenGL frame
-            self.opengl_frame = RealOpenGLFrame(master, **kw)
+            super().__init__(master, **kw)
         
     def pack(self, **kw):
         if self.is_fallback:
             self.fallback_canvas.pack(**kw)
         else:
-            self.opengl_frame.pack(**kw)
+            super().pack(**kw)
     
     def bind(self, event, callback):
         if self.is_fallback:
             self.fallback_canvas.bind(event, callback)
         else:
-            self.opengl_frame.bind(event, callback)
+            super().bind(event, callback)
     
     def winfo_rootx(self):
         if self.is_fallback:
             return self.fallback_canvas.winfo_rootx() if hasattr(self.fallback_canvas, 'winfo_rootx') else 0
         else:
-            return self.opengl_frame.winfo_rootx()
+            return super().winfo_rootx()
     
     def winfo_rooty(self):
         if self.is_fallback:
             return self.fallback_canvas.winfo_rooty() if hasattr(self.fallback_canvas, 'winfo_rooty') else 0
         else:
-            return self.opengl_frame.winfo_rooty()
+            return super().winfo_rooty()
     
     def show_fallback_message(self):
-        """Show fallback message when OpenGL is not available"""
         if hasattr(self, 'fallback_canvas'):
             self.fallback_canvas.create_text(
                 self.width // 2, self.height // 2,
@@ -105,30 +98,32 @@ class Live2DOpenGLFrame:
                 justify=tk.CENTER
             )
             
-            # Add decorative border
             self.fallback_canvas.create_rectangle(
                 10, 10, self.width - 10, self.height - 10,
                 outline='#ff6b6b', width=2
             )
         
     def initgl(self):
-        """Initialize OpenGL states when the frame is created"""
         if not LIVE2D_AVAILABLE or self.is_fallback:
             return
             
         try:
-            # Clean up previous model if exists
             if self.model:
                 del self.model
             live2d.dispose()
 
-            # Initialize Live2D
             live2d.init()
             live2d.glewInit()
             
-            self.is_initialized = True
+            import OpenGL.GL as gl
+            gl.glViewport(0, 0, self.width, self.height)
+            gl.glClearColor(0.0, 0.0, 0.0, 1.0)
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
             
-            # Load model if path is set
+            self.is_initialized = True
+            print("OpenGL initialized successfully")
+            
             if self.model_path and os.path.exists(self.model_path):
                 self.load_model(self.model_path)
                 
@@ -137,7 +132,6 @@ class Live2DOpenGLFrame:
             self.is_initialized = False
 
     def load_model(self, model_path):
-        """Load a Live2D model"""
         if self.is_fallback:
             return False
             
@@ -146,62 +140,101 @@ class Live2DOpenGLFrame:
             return False
             
         try:
+            if self.model:
+                del self.model
+                
             self.model = live2d.LAppModel()
-            self.model.LoadModelJson(model_path)
-            self.model.Resize(self.width, self.height)
-            self.model_path = model_path
-            return True
+            success = self.model.LoadModelJson(model_path)
+            
+            if success:
+                self.model.Resize(self.width, self.height)
+                self.model_path = model_path
+                print(f"Model loaded successfully: {os.path.basename(model_path)}")
+                return True
+            else:
+                print("Failed to load model")
+                return False
+                
         except Exception as e:
             print(f"Model loading error: {e}")
             return False
 
     def redraw(self):
-        """Render a single frame"""
         if self.is_fallback or not self.is_initialized or not self.model:
             return
             
         try:
+            import OpenGL.GL as gl
+            
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
             live2d.clearBuffer()
 
-            # Get mouse position relative to this frame
             try:
                 screen_x, screen_y = pyautogui.position()
                 x = screen_x - self.winfo_rootx()
                 y = screen_y - self.winfo_rooty()
+                
+                norm_x = (x / self.width) * 2.0 - 1.0
+                norm_y = 1.0 - (y / self.height) * 2.0
             except:
-                x, y = 0, 0
+                norm_x, norm_y = 0, 0
 
             self.model.Update()
-            self.model.Drag(x, y)
+            self.model.Drag(norm_x, norm_y)
             self.model.Draw()
-            
-            # Control frame rate
-            sleep(1 / 60)
             
         except Exception as e:
             print(f"Rendering error: {e}")
 
+    def start_animation(self):
+        if self.is_fallback or not self.is_initialized:
+            return
+            
+        self.animate_flag = True
+        if self.animation_thread is None or not self.animation_thread.is_alive():
+            self.animation_thread = threading.Thread(target=self._animation_loop, daemon=True)
+            self.animation_thread.start()
+
+    def stop_animation(self):
+        self.animate_flag = False
+
+    def _animation_loop(self):
+        while self.animate_flag and self.is_initialized:
+            try:
+                if self.model:
+                    self.after_idle(self.tkRedraw)
+                sleep(1/60)
+            except Exception as e:
+                print(f"Animation loop error: {e}")
+                break
+
     def start_random_motion(self):
-        """Start a random motion"""
         if self.is_fallback:
             return
             
         if self.model:
             try:
                 self.model.StartRandomMotion()
+                print("Random motion started")
             except Exception as e:
                 print(f"Motion error: {e}")
 
     def cleanup(self):
-        """Cleanup Live2D resources"""
         if self.is_fallback:
             return
             
+        self.stop_animation()
+        
         if self.model:
             del self.model
             self.model = None
+            
         if self.is_initialized:
-            live2d.dispose()
+            try:
+                live2d.dispose()
+            except:
+                pass
+            self.is_initialized = False
 
 class Live2DApp:
     def __init__(self, root):
@@ -210,32 +243,21 @@ class Live2DApp:
         self.root.geometry("900x700")
         self.root.configure(bg='#2b2b2b')
         
-        # Initialize components
         self.opengl_frame = None
         self.model_loaded = False
         
         self.setup_ui()
-        
-        # Handle window closing
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
     def setup_ui(self):
-        """Set up the user interface"""
-        # Main container
         main_frame = tk.Frame(self.root, bg='#2b2b2b')
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Top section - Model display area
         self.setup_model_area(main_frame)
-        
-        # Middle section - Controls
         self.setup_controls(main_frame)
-        
-        # Bottom section - Text input
         self.setup_text_input(main_frame)
         
     def setup_model_area(self, parent):
-        """Set up the Live2D model display area"""
         model_frame = tk.LabelFrame(
             parent, 
             text="Live2D Model (OpenGL)" if OPENGL_AVAILABLE else "Live2D Model (Dependencies Missing)", 
@@ -245,18 +267,14 @@ class Live2DApp:
         )
         model_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        # Always create the frame (it will handle fallback internally)
         self.opengl_frame = Live2DOpenGLFrame(
             model_frame,
             width=600,
             height=400
         )
         self.opengl_frame.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
-        
-        # Bind mouse click for random motion
         self.opengl_frame.bind("<Button-1>", self.on_model_click)
         
-        # Status label
         if LIVE2D_AVAILABLE and OPENGL_AVAILABLE:
             self.status_label = tk.Label(
                 model_frame, 
@@ -283,11 +301,9 @@ class Live2DApp:
         self.status_label.pack(pady=5)
     
     def setup_controls(self, parent):
-        """Set up control buttons"""
         control_frame = tk.Frame(parent, bg='#2b2b2b')
         control_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Load model button
         self.load_button = tk.Button(
             control_frame,
             text="Load Model" if LIVE2D_AVAILABLE else "Install Dependencies",
@@ -301,7 +317,6 @@ class Live2DApp:
         )
         self.load_button.pack(side=tk.LEFT, padx=(0, 10))
         
-        # Random motion button
         self.motion_button = tk.Button(
             control_frame,
             text="Random Motion",
@@ -316,7 +331,6 @@ class Live2DApp:
         )
         self.motion_button.pack(side=tk.LEFT, padx=(0, 10))
         
-        # Animation toggle button
         self.anim_button = tk.Button(
             control_frame,
             text="Start Animation",
@@ -331,7 +345,6 @@ class Live2DApp:
         )
         self.anim_button.pack(side=tk.LEFT, padx=(0, 10))
         
-        # Model info button
         self.info_button = tk.Button(
             control_frame,
             text="Model Info",
@@ -347,7 +360,6 @@ class Live2DApp:
         self.info_button.pack(side=tk.LEFT)
     
     def setup_text_input(self, parent):
-        """Set up the text input area at the bottom"""
         text_frame = tk.LabelFrame(
             parent, 
             text="Interactive Text Input (Always Available)", 
@@ -357,11 +369,9 @@ class Live2DApp:
         )
         text_frame.pack(fill=tk.X, pady=(0, 0))
         
-        # Text input container
         input_container = tk.Frame(text_frame, bg='#3b3b3b')
         input_container.pack(fill=tk.X, padx=10, pady=10)
         
-        # Text entry field
         self.text_entry = tk.Entry(
             input_container,
             font=('Arial', 12),
@@ -374,7 +384,6 @@ class Live2DApp:
         self.text_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.text_entry.bind('<Return>', self.on_text_submit)
         
-        # Send button
         self.send_button = tk.Button(
             input_container,
             text="Send",
@@ -388,11 +397,9 @@ class Live2DApp:
         )
         self.send_button.pack(side=tk.RIGHT)
         
-        # Output text area
         output_container = tk.Frame(text_frame, bg='#3b3b3b')
         output_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         
-        # Scrollable text output
         self.text_output = tk.Text(
             output_container,
             height=6,
@@ -405,14 +412,12 @@ class Live2DApp:
             wrap=tk.WORD
         )
         
-        # Scrollbar for text output
         scrollbar = tk.Scrollbar(output_container, orient=tk.VERTICAL, command=self.text_output.yview)
         self.text_output.configure(yscrollcommand=scrollbar.set)
         
         self.text_output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Add welcome message
         self.add_output_message("🎭 Welcome to Live2D Python App!")
         
         if LIVE2D_AVAILABLE and OPENGL_AVAILABLE:
@@ -425,7 +430,6 @@ class Live2DApp:
             self.add_output_message("📦 Click 'Install Dependencies' for help")
     
     def show_install_help(self):
-        """Show installation help dialog"""
         help_text = """Live2D Dependencies Installation
 
 Required packages:
@@ -453,7 +457,6 @@ After installation, restart the application.
         self.add_output_message("📋 Installation help displayed")
     
     def load_model(self):
-        """Load a Live2D model file"""
         if not LIVE2D_AVAILABLE:
             self.show_install_help()
             return
@@ -481,7 +484,6 @@ After installation, restart the application.
                         fg='#4CAF50'
                     )
                     
-                    # Enable buttons
                     self.motion_button.config(state=tk.NORMAL)
                     self.anim_button.config(state=tk.NORMAL)
                     self.info_button.config(state=tk.NORMAL)
@@ -489,10 +491,8 @@ After installation, restart the application.
                     self.add_output_message(f"🎯 Successfully loaded: {model_name}")
                     self.add_output_message("🎮 Use controls above or click the model for interaction")
                     
-                    # Start animation automatically
-                    if hasattr(self.opengl_frame, 'animate'):
-                        self.opengl_frame.animate = 1
-                        self.anim_button.config(text="Stop Animation")
+                    self.opengl_frame.start_animation()
+                    self.anim_button.config(text="Stop Animation", bg='#FF9800')
                     
                 else:
                     raise Exception("Model loading failed")
@@ -502,7 +502,6 @@ After installation, restart the application.
                 self.add_output_message(f"❌ Failed to load model: {str(e)}")
     
     def trigger_motion(self):
-        """Trigger random motion"""
         if not LIVE2D_AVAILABLE:
             self.add_output_message("❌ Live2D not available - install dependencies first")
             return
@@ -514,22 +513,19 @@ After installation, restart the application.
             self.add_output_message("❌ No model loaded yet")
     
     def toggle_animation(self):
-        """Toggle animation on/off"""
         if not LIVE2D_AVAILABLE or not self.model_loaded:
             return
             
-        if hasattr(self.opengl_frame, 'animate'):
-            if self.opengl_frame.animate:
-                self.opengl_frame.animate = 0
-                self.anim_button.config(text="Start Animation", bg='#4CAF50')
-                self.add_output_message("⏸️ Animation paused")
-            else:
-                self.opengl_frame.animate = 1
-                self.anim_button.config(text="Stop Animation", bg='#FF9800')
-                self.add_output_message("▶️ Animation resumed")
+        if self.opengl_frame.animate_flag:
+            self.opengl_frame.stop_animation()
+            self.anim_button.config(text="Start Animation", bg='#4CAF50')
+            self.add_output_message("⏸️ Animation paused")
+        else:
+            self.opengl_frame.start_animation()
+            self.anim_button.config(text="Stop Animation", bg='#FF9800')
+            self.add_output_message("▶️ Animation resumed")
     
     def show_model_info(self):
-        """Show information about the loaded model"""
         if not LIVE2D_AVAILABLE:
             self.show_install_help()
             return
@@ -545,6 +541,7 @@ Model Information:
 🎮 Live2D Version: {getattr(live2d, 'LIVE2D_VERSION', 'Unknown')}
 🖼️ Frame Size: {self.opengl_frame.width}x{self.opengl_frame.height}
 ✅ Status: Loaded and Ready
+🎬 Animation: {'Running' if self.opengl_frame.animate_flag else 'Stopped'}
             """.strip()
             
             messagebox.showinfo("Model Information", info)
@@ -553,24 +550,19 @@ Model Information:
             self.add_output_message("❌ No model loaded to show info for")
     
     def on_model_click(self, event):
-        """Handle mouse click on model"""
         if LIVE2D_AVAILABLE:
             self.trigger_motion()
         else:
             self.add_output_message("❌ Live2D dependencies missing - text input still works!")
     
     def on_text_submit(self, event=None):
-        """Handle text input submission"""
         text = self.text_entry.get().strip()
         if text:
             self.add_output_message(f"👤 You: {text}")
             self.text_entry.delete(0, tk.END)
-            
-            # Process the text
             self.process_user_input(text)
     
     def process_user_input(self, text):
-        """Process user input and generate responses"""
         text_lower = text.lower()
         
         if "hello" in text_lower or "hi" in text_lower:
@@ -627,36 +619,26 @@ Model Information:
         else:
             response = f"💬 You said: '{text}'. Try 'help' for available commands!"
         
-        # Add response with delay
         self.root.after(500, lambda: self.add_output_message(f"🤖 App: {response}"))
     
     def add_output_message(self, message):
-        """Add a message to the output text area"""
         self.text_output.insert(tk.END, f"{message}\n")
         self.text_output.see(tk.END)
     
     def on_closing(self):
-        """Handle application closing"""
         if self.opengl_frame:
             self.opengl_frame.cleanup()
         self.root.destroy()
 
 def main():
-    """Main function to run the application"""
-    root = tk.Tk()
-    app = Live2DApp(root)
-    
-    # Center the window
-    root.update_idletasks()
-    x = (root.winfo_screenwidth() // 2) - (900 // 2)
-    y = (root.winfo_screenheight() // 2) - (700 // 2)
-    root.geometry(f"900x700+{x}+{y}")
-    
     try:
+        root = tk.Tk()
+        app = Live2DApp(root)
         root.mainloop()
-    except KeyboardInterrupt:
-        if hasattr(app, 'opengl_frame') and app.opengl_frame:
-            app.opengl_frame.cleanup()
+        
+    except Exception as e:
+        print(f"Application error: {e}")
+        messagebox.showerror("Error", f"Application failed to start: {e}")
 
 if __name__ == "__main__":
     main()
